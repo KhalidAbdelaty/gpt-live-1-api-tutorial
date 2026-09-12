@@ -138,7 +138,14 @@ STATE: dict[str, Any] = {
     "pending_save": None,
     "saved_plan": None,
     "log": [],
+    "steps": [],
 }
+
+
+def _add_step(kind: str, detail: str) -> None:
+    """Record one backend activity step for the dashboard's live trace."""
+    STATE["steps"].append({"t": time.time(), "kind": kind, "detail": detail})
+    STATE["steps"] = STATE["steps"][-40:]
 
 
 def _log(message: str) -> None:
@@ -192,6 +199,7 @@ async def create_session(request: Request) -> dict:
     STATE["plan_draft"] = None
     STATE["pending_save"] = None
     STATE["saved_plan"] = None
+    STATE["steps"] = []
     _log(f"session created: {result.session.id}")
     return result.model_dump()
 
@@ -215,14 +223,20 @@ async def record_event(request: Request) -> dict:
         STATE["task_version"] += 1
         STATE["active_constraint"] = event.get("constraint")
         _log(f"task version {STATE['task_version']}: {event.get('constraint')}")
+        _add_step("delegate", event.get("constraint") or "Delegated to the backend")
     elif kind == "stale_result":
         _log(f"discarded a result from an older task version ({event.get('version')})")
+        _add_step("stale", f"Discarded a result from task version {event.get('version')}")
+    elif kind == "step":
+        _add_step(event.get("step_kind", "info"), event.get("detail", ""))
     elif kind == "plan_draft":
         STATE["plan_draft"] = event.get("plan")
         _log("plan draft updated")
+        _add_step("plan_ready", "Backend returned a learning plan")
     elif kind == "pending_save":
         STATE["pending_save"] = event.get("plan")
         _log("assistant proposed a save, awaiting confirmation")
+        _add_step("propose_save", "Proposed saving the plan, awaiting confirmation")
     elif kind == "log":
         _log(str(event.get("message", "")))
 
@@ -260,6 +274,7 @@ async def save_plan(request: Request) -> dict:
     STATE["saved_plan"] = record
     STATE["pending_save"] = None
     _log(f"plan saved: {record['id']}")
+    _add_step("saved", f"Saved as {record['id']}")
     return {"status": "confirmed", "plan_id": record["id"]}
 
 

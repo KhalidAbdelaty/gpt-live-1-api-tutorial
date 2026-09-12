@@ -19,7 +19,6 @@ from pathlib import Path
 
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 
 SERVER = "http://127.0.0.1:8000"
 REPO_URL = "https://github.com/KhalidAbdelaty/gpt-live-1-api-tutorial"
@@ -27,6 +26,17 @@ ASSETS = Path(__file__).parent / "assets"
 DATACAMP_LOGO = ASSETS / "datacamp-logo.png"
 OPENAI_LOGO = ASSETS / "openai-logo.png"
 WIDGET_HTML = (Path(__file__).parent / "static" / "call_widget.html").read_text(encoding="utf-8")
+
+STEP_STYLE = {
+    "delegate": ("\U0001F9E0", "Delegated to backend"),
+    "search": ("\U0001F50D", "Searching DataCamp"),
+    "open_page": ("\U0001F4C4", "Reading a page"),
+    "responded": ("\U0001F4AC", "Backend responded"),
+    "plan_ready": ("\U0001F4CB", "Plan drafted"),
+    "propose_save": ("\U0001F9E9", "Proposed a save"),
+    "saved": ("\u2705", "Saved"),
+    "stale": ("\U0001F5D1\uFE0F", "Discarded a stale result"),
+}
 
 FEATURES = [
     ("\U0001F3A4", "Full-duplex voice", "Real WebRTC audio to gpt-live-1. Interruptions and pauses handled by the model, not a VAD hack."),
@@ -63,6 +73,12 @@ st.markdown(
       .stApp { background: var(--surface); }
       .block-container { padding-top: 1.6rem; max-width: 1180px; }
       [data-testid="stSidebar"] { display: none; }
+      /* Hide the Deploy button and hamburger menu. This is a published tutorial
+         demo, not a workspace a reader is meant to deploy from, and the default
+         toolbar sits on top of the brand row below otherwise. */
+      [data-testid="stToolbar"] { display: none !important; }
+      [data-testid="stDecoration"] { display: none !important; }
+      [data-testid="stHeader"] { height: 2.2rem !important; background: transparent !important; }
 
       /* ---- top bar ---- */
       .topbar {
@@ -138,6 +154,18 @@ st.markdown(
       }
       .empty-state { color: var(--muted); font-size: .88rem; padding: .6rem 0; }
 
+      /* ---- backend activity timeline ---- */
+      .step-row { display: flex; gap: .65rem; margin-bottom: .6rem; align-items: flex-start; }
+      .step-icon {
+        flex: 0 0 30px; width: 30px; height: 30px; border-radius: 50%;
+        background: var(--brand-soft); display: flex; align-items: center; justify-content: center;
+        font-size: .95rem;
+      }
+      .step-body { flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: .55rem .75rem; background: #FBFCFB; }
+      .step-kind { font-size: .72rem; font-weight: 700; color: var(--brand); text-transform: uppercase; letter-spacing: .03em; }
+      .step-detail { font-size: .87rem; color: var(--ink); margin-top: .1rem; word-break: break-word; }
+      .step-time { font-size: .72rem; color: var(--muted); margin-top: .15rem; }
+
       .stButton > button {
         border-radius: 10px; font-weight: 700; border: 1px solid var(--line);
       }
@@ -208,7 +236,7 @@ with left:
         </div>""",
         unsafe_allow_html=True,
     )
-    components.html(WIDGET_HTML, height=470, scrolling=True)
+    st.iframe(WIDGET_HTML, height=470)
 
 with right:
     header_col, refresh_col = st.columns([3, 1])
@@ -242,7 +270,7 @@ with right:
             unsafe_allow_html=True,
         )
 
-        tab_plan, tab_log = st.tabs(["Learning plan", "Event log"])
+        tab_plan, tab_steps, tab_log = st.tabs(["Learning plan", "Backend activity", "Event log"])
 
         with tab_plan:
             plan = state.get("saved_plan", {}).get("plan") if state.get("saved_plan") else None
@@ -267,6 +295,26 @@ with right:
                     )
             else:
                 st.markdown('<p class="empty-state">No plan yet. Start a conversation and state a learning goal.</p>', unsafe_allow_html=True)
+
+        with tab_steps:
+            st.caption("What the backend is doing, as it happens: delegation, real web_search calls, and the save proposal.")
+            steps = state.get("steps", [])
+            if not steps:
+                st.markdown('<p class="empty-state">No backend activity yet.</p>', unsafe_allow_html=True)
+            for step in steps[::-1]:
+                icon, label = STEP_STYLE.get(step.get("kind"), ("\u2022", "Update"))
+                ts = time.strftime("%H:%M:%S", time.localtime(step["t"]))
+                st.markdown(
+                    f"""<div class="step-row">
+                        <div class="step-icon">{icon}</div>
+                        <div class="step-body">
+                            <div class="step-kind">{label}</div>
+                            <div class="step-detail">{step.get('detail', '')}</div>
+                            <div class="step-time">{ts}</div>
+                        </div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
 
         with tab_log:
             log = state.get("log", [])
