@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voice Learning Assistant</title>
+    <style>
+      body {
+        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 12px 16px;
+        background: #f7f7f5;
+        color: #05192d;
+      }
+      button {
+        border: none;
+        border-radius: 10px;
+        padding: 0.6rem 1.2rem;
+        font-weight: 700;
+        cursor: pointer;
+        margin-right: 8px;
+      }
+      #start {
+        background: #03ef62;
+        color: #05192d;
+      }
+      #stop {
+        background: #e6e4dd;
+        color: #05192d;
+      }
+      #confirm {
+        background: #05192d;
+        color: #03ef62;
+        display: none;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #status {
+        margin: 10px 0 4px;
+        font-size: 0.9rem;
+        color: #4b5563;
+      }
+      #transcript {
+        background: #ffffff;
+        border: 1px solid #e6e4dd;
+        border-radius: 12px;
+        padding: 10px 12px;
+        height: 220px;
+        overflow-y: auto;
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+      .u {
+        color: #05192d;
+      }
+      .a {
+        color: #02904a;
+      }
+      #pending {
+        margin-top: 10px;
+        background: #fff7e6;
+        border: 1px solid #f0d38a;
+        border-radius: 10px;
+        padding: 10px 12px;
+        display: none;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="start">Start conversation</button>
+    <button id="stop" disabled>End conversation</button>
+    <p id="status">Not connected.</p>
+    <div id="transcript"></div>
+    <div id="pending">
+      <strong>Assistant wants to save this plan.</strong>
+      <div id="pending-summary"></div>
+      <button id="confirm">Confirm and save</button>
+    </div>
+    <script type="module">
+      const SERVER = "http://127.0.0.1:8000";
+      const start = document.getElementById("start");
+      const stop = document.getElementById("stop");
+      const status = document.getElementById("status");
+      const transcriptEl = document.getElementById("transcript");
+      const pendingBox = document.getElementById("pending");
+      const pendingSummary = document.getElementById("pending-summary");
+      const confirmBtn = document.getElementById("confirm");
+      const audio = new Audio();
+      audio.autoplay = true;
+
+      let peer, events, microphone, connection;
+      let ready = false;
+      let finalized = false;
+      let taskVersion = 0;
+      const delegationVersion = {}; // delegation_id -> task version at creation
+      let pendingFunctionCall = null; // {call_id, args}
+
+      function appendLine(cls, text) {
+        const line = document.createElement("div");
+        line.className = cls;
+        line.textContent = text;
+        transcriptEl.appendChild(line);
+        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      }
+
+      async function postEvent(payload) {
+        try {
+          await fetch(`${SERVER}/api/state/event`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+        } catch (err) {
+          // Best-effort telemetry only; never blocks the live conversation.
+        }
+      }
+
+      function cleanup() {
+        microphone?.getTracks().forEach((t) => t.stop());
+        events?.close();
+        peer?.close();
+        audio.srcObject = null;
+        ready = false;
+        start.disabled = false;
+        stop.disabled = true;
+      }
+
+      start.addEventListener("click", async () => {
+        start.disabled = true;
+        finalized = false;
+        status.textContent = "Connecting...";
+        try {
+          connection = new RTCPeerConnection();
+          peer = connection;
+          connection.addEventListener("track", (event) => {
+            audio.srcObject = new MediaStream([event.track]);
+            audio.play().catch(() => {
+              status.textContent = "Select play on the audio element to hear the assistant.";
+            });
+          });
+          microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+          for (const track of microphone.getAudioTracks()) {
+            connection.addTrack(track, microphone);
+          }
+
+          events = connection.createDataChannel("oai-events");
+          events.addEventListener("message", ({ data }) => onEvent(JSON.parse(data)));
+          events.addEventListener("close", () => {
+            if (!finalized) {
+              status.textContent = "Disconnected without final session usage.";
+              cleanup();
+            }
+          });
+
+          const offer = await connection.createOffer();
+          await connection.setLocalDescription(offer);
+          if (connection.iceGatheringState !== "complete") {
+            await new Promise((resolve) => {
+              function onState() {
+                if (connection.iceGatheringState === "complete") {
+                  connection.removeEventListener("icegatheringstatechange", onState);
+                  resolve();
+                }
+              }
+              connection.addEventListener("icegatheringstatechange", onState);
+              onState();
+            });
+          }
+
+          const sdp = connection.localDescription.sdp;
+          const response = await fetch(`${SERVER}/api/session`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sdp }),
+          });
+          if (!response.ok) throw new Error(await response.text());
+          const result = await response.json();
+          await connection.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
+        } catch (error) {
+          status.textContent = error.message || String(error);
+          cleanup();
+        }
+      });
+
+      stop.addEventListener("click", () => {
+        if (!ready || events?.readyState !== "open") return;
+        stop.disabled = true;
+        status.textContent = "Finishing the conversation...";
+        events.send(JSON.stringify({ type: "session.close" }));
+      });
+
+      confirmBtn.addEventListener("click", async () => {
+        if (!pendingFunctionCall) return;
+        confirmBtn.disabled = true;
+        try {
+          const saveResponse = await fetch(`${SERVER}/api/save-plan`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirmed: true, plan: pendingFunctionCall.args }),
+          });
+          const saveResult = await saveResponse.json();
+          events.send(
+            JSON.stringify({
+              type: "response.item.create",
+              event_id: "save_result_" + Date.now(),
+              item: {
+                type: "function_call_output",
+                call_id: pendingFunctionCall.call_id,
+                output: JSON.stringify(saveResult),
+              },
+            }),
+          );
+          events.send(JSON.stringify({ type: "response.create", event_id: "continue_" + Date.now() }));
+        } finally {
+          pendingBox.style.display = "none";
+          confirmBtn.disabled = false;
+          pendingFunctionCall = null;
+        }
+      });
+
+      function onEvent(event) {
+        if (event.type === "session.started") {
+          ready = true;
+          stop.disabled = false;
+          status.textContent = "Connected: " + event.session.id;
+          return;
+        }
+        if (event.type === "session.closed") {
+          finalized = true;
+          status.textContent = "Conversation ended.";
+          postEvent({ kind: "log", message: `session closed, usage ${JSON.stringify(event.usage)}` });
+          cleanup();
+          return;
+        }
+        if (event.type === "session.input_transcript.delta") {
+          appendLine("u", "You: " + event.delta);
+          postEvent({ kind: "transcript", speaker: "learner", text: event.delta });
+          return;
+        }
+        if (event.type === "session.output_transcript.delta") {
+          appendLine("a", "Assistant: " + event.delta);
+          postEvent({ kind: "transcript", speaker: "assistant", text: event.delta });
+          return;
+        }
+        if (event.type === "session.delegation.created") {
+          taskVersion += 1;
+          delegationVersion[event.delegation.id || event.delegation_id] = taskVersion;
+          postEvent({ kind: "new_delegation", constraint: "delegation started" });
+          return;
+        }
+        if (event.type === "response.event") {
+          const inner = event.event;
+          const delegationId = event.delegation_id;
+          const version = delegationVersion[delegationId];
+          if (inner.type === "response.output_item.done" && inner.item?.type === "function_call") {
+            if (version && version < taskVersion) {
+              postEvent({ kind: "stale_result", version });
+              return;
+            }
+            if (inner.item.name === "save_learning_plan") {
+              const args = JSON.parse(inner.item.arguments || "{}");
+              pendingFunctionCall = { call_id: inner.item.call_id, args };
+              pendingSummary.textContent = `${args.goal || ""} (${(args.items || []).length} items, ${args.weekly_hours || "?"} h/week)`;
+              pendingBox.style.display = "block";
+              postEvent({ kind: "pending_save", plan: args });
+            }
+          }
+          if (inner.type === "response.output_text.done" || inner.type === "response.completed") {
+            if (version && version < taskVersion) {
+              postEvent({ kind: "stale_result", version });
+            }
+          }
+        }
+      }
+    </script>
+  </body>
+</html>
