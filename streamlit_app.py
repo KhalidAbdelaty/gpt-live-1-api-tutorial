@@ -107,9 +107,8 @@ st.markdown(
       .section-sub { color: var(--muted); font-size: .84rem; margin: 0 0 .9rem; }
 
       /* ---- widget frame ---- */
-      .widget-frame iframe {
-        border: 1px solid var(--line) !important; border-radius: 12px !important;
-        box-shadow: var(--shadow);
+      iframe[title="st.iframe"], .stIFrame iframe, iframe {
+        border-radius: 12px;
       }
 
       /* ---- status + metrics ---- */
@@ -209,9 +208,7 @@ with left:
         </div>""",
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="widget-frame">', unsafe_allow_html=True)
     components.html(WIDGET_HTML, height=470, scrolling=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
 with right:
     header_col, refresh_col = st.columns([3, 1])
