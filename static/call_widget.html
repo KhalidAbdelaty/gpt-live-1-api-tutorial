@@ -33,10 +33,45 @@
         background: #f0f1ef;
         color: #05192d;
       }
+      #newsession {
+        background: #eef1f4;
+        color: #05192d;
+      }
+      .session-line {
+        margin: 0 0 8px;
+        font-size: 0.72rem;
+        color: #8592a0;
+        word-break: break-all;
+      }
+      .session-controls {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 8px 0 4px;
+      }
+      .session-lbl {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #5b6b7a;
+      }
+      .session-picker {
+        font-size: 0.78rem;
+        padding: 5px 8px;
+        border-radius: 8px;
+        border: 1px solid #e4e7ea;
+        background: #ffffff;
+        color: #05192d;
+        max-width: 320px;
+      }
+      .session-picker:disabled {
+        opacity: 0.5;
+      }
       #confirm {
-        background: #05192d;
+        background: #02904a;
         color: #ffffff;
-        display: none;
+        display: inline-block;
+        margin-top: 8px;
+        width: 100%;
       }
       button:disabled {
         opacity: 0.5;
@@ -57,45 +92,227 @@
         font-size: 0.9rem;
         line-height: 1.55;
       }
-      .u {
+      .bubble {
+        margin-bottom: 8px;
+        padding: 8px 11px;
+        border-radius: 12px;
+        max-width: 92%;
+      }
+      .bubble-who {
+        font-size: 0.66rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        margin-bottom: 2px;
+      }
+      .bubble-text {
+        font-size: 0.9rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
         color: #05192d;
       }
-      .a {
+      .bubble-user {
+        background: #eef1f4;
+        margin-right: auto;
+      }
+      .bubble-user .bubble-who {
+        color: #5b6b7a;
+      }
+      .bubble-assistant {
+        background: #e7f7ee;
+        margin-left: auto;
+      }
+      .bubble-assistant .bubble-who {
         color: #02904a;
-        font-weight: 600;
+      }
+      /* interim (still-arriving) speech is dimmed until the turn settles */
+      .bubble.interim .bubble-text {
+        opacity: 0.55;
+      }
+      .bubble-time {
+        font-size: 0.62rem;
+        color: #98a2ad;
+        margin-top: 3px;
+      }
+      /* animated speaking/listening dots on the active bubble */
+      .typing {
+        display: inline-flex;
+        gap: 3px;
+        margin-top: 5px;
+      }
+      .typing span {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.35;
+        animation: dot 1.2s infinite both;
+      }
+      .typing span:nth-child(2) {
+        animation-delay: 0.18s;
+      }
+      .typing span:nth-child(3) {
+        animation-delay: 0.36s;
+      }
+      @keyframes dot {
+        0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+        40% { opacity: 1; transform: translateY(-2px); }
+      }
+      .bubble-user .typing { color: #5b6b7a; }
+      .bubble-assistant .typing { color: #02904a; }
+      /* inline chips for backend activity and system messages */
+      .chip-row {
+        display: flex;
+        justify-content: center;
+        margin: 6px 0;
+      }
+      .chip {
+        font-size: 0.72rem;
+        color: #5b6b7a;
+        background: #f2f4f6;
+        border: 1px solid #e4e7ea;
+        border-radius: 999px;
+        padding: 3px 11px;
+        max-width: 92%;
+        text-align: center;
+        word-break: break-word;
+      }
+      .chip.activity {
+        background: #eef6ff;
+        border-color: #d3e4f7;
+        color: #1f4e79;
+      }
+      .chip.saved {
+        background: #e7f7ee;
+        border-color: #bfe6cf;
+        color: #02904a;
       }
       #pending {
-        margin-top: 10px;
+        margin: 6px 0 12px;
         background: #fff7e6;
-        border: 1px solid #f0d38a;
+        border: 2px solid #f0b429;
         border-radius: 10px;
-        padding: 10px 12px;
+        padding: 12px 14px;
         display: none;
         font-size: 0.9rem;
+        box-shadow: 0 6px 18px rgba(240, 180, 41, 0.25);
+      }
+      #pending-summary {
+        margin: 6px 0 4px;
+        color: #5b6b7a;
       }
     </style>
   </head>
   <body>
     <button id="start">Start conversation</button>
     <button id="stop" disabled>End conversation</button>
+    <button id="newsession" title="Start a fresh session. Plans saved under other sessions stay saved.">New session</button>
+    <div class="session-controls">
+      <label class="session-lbl" for="session-picker">Session</label>
+      <select id="session-picker" class="session-picker" title="Start new, or resume a past session to load its plan and memory."></select>
+    </div>
     <p id="status">Not connected.</p>
-    <div id="transcript"></div>
+    <p id="session-line" class="session-line"></p>
     <div id="pending">
-      <strong>Assistant wants to save this plan.</strong>
+      <strong>&#9989; The assistant wants to save this plan.</strong>
       <div id="pending-summary"></div>
       <button id="confirm">Confirm and save</button>
     </div>
+    <div id="transcript"></div>
     <script type="module">
       const SERVER = "http://127.0.0.1:8000";
       const start = document.getElementById("start");
       const stop = document.getElementById("stop");
+      const newSessionBtn = document.getElementById("newsession");
+      const picker = document.getElementById("session-picker");
       const status = document.getElementById("status");
+      const sessionLine = document.getElementById("session-line");
       const transcriptEl = document.getElementById("transcript");
       const pendingBox = document.getElementById("pending");
       const pendingSummary = document.getElementById("pending-summary");
       const confirmBtn = document.getElementById("confirm");
       const audio = new Audio();
       audio.autoplay = true;
+
+      // An application-owned session id. The live GPT-Live session id changes every
+      // connect and cannot be reopened, so this is what gives the app memory: connecting
+      // with an existing id restores that session's plan and history. By default each
+      // page load starts a BRAND NEW session; use the picker to resume a past one.
+      function makeAppId() {
+        const raw =
+          crypto && crypto.randomUUID
+            ? crypto.randomUUID().replace(/-/g, "")
+            : Date.now().toString(36) + Math.random().toString(36).slice(2);
+        return ("app_" + raw).slice(0, 60);
+      }
+      let appSessionId = makeAppId(); // fresh session on load
+      let resuming = false; // true when a past session is selected in the picker
+
+      function updateSessionLine() {
+        sessionLine.textContent = resuming
+          ? "Resuming session " + appSessionId + " \u00b7 its saved plan and history will load."
+          : "New session " + appSessionId + " \u00b7 a fresh start. Pick a past session to resume one.";
+      }
+
+      function startFreshSession() {
+        appSessionId = makeAppId();
+        resuming = false;
+        if (picker) picker.value = "__new__";
+        resetTranscript();
+        pendingBox.style.display = "none";
+        pendingFunctionCall = null;
+        updateSessionLine();
+      }
+
+      // Populate the picker with past sessions from the server (memory + on disk), so
+      // one can be chosen and resumed even after a server restart.
+      async function loadSessionPicker() {
+        let sessions = [];
+        try {
+          const res = await fetch(`${SERVER}/api/sessions`);
+          const data = await res.json();
+          sessions = (data && data.sessions) || [];
+        } catch (err) {
+          // Server may not be up yet; the picker still offers a new session.
+        }
+        picker.innerHTML = "";
+        const fresh = document.createElement("option");
+        fresh.value = "__new__";
+        fresh.textContent = "\uD83C\uDD95 New session";
+        picker.appendChild(fresh);
+        for (const s of sessions) {
+          const option = document.createElement("option");
+          option.value = s.app_session_id;
+          const when = s.last_active ? new Date(s.last_active * 1000).toLocaleString() : "";
+          option.textContent =
+            "Resume " + String(s.app_session_id).slice(0, 14) + " \u00b7 " + (s.saved_count || 0) + " saved" + (when ? " \u00b7 " + when : "");
+          picker.appendChild(option);
+        }
+        const has = (value) => [...picker.options].some((option) => option.value === value);
+        picker.value = resuming && has(appSessionId) ? appSessionId : "__new__";
+      }
+
+      picker.addEventListener("change", () => {
+        if (ready) {
+          picker.value = resuming ? appSessionId : "__new__";
+          return;
+        }
+        if (picker.value === "__new__") {
+          startFreshSession();
+        } else {
+          appSessionId = picker.value;
+          resuming = true;
+          resetTranscript();
+          pendingBox.style.display = "none";
+          pendingFunctionCall = null;
+          updateSessionLine();
+          status.textContent = "Will resume this session on Start.";
+        }
+      });
+
+      updateSessionLine();
+      loadSessionPicker();
 
       let peer, events, microphone, connection;
       let ready = false;
@@ -104,13 +321,108 @@
       const delegationVersion = {}; // delegation_id -> task version at creation
       let pendingFunctionCall = null; // {call_id, args}
       let speechSinceLastDelegation = ""; // what the learner said since the last handoff
+      let ending = false; // guards a single hang-up
+      let endBuffer = ""; // rolling tail of the learner's recent speech
+      let closeTimeout = null; // fallback so the UI never hangs on "Ending..."
+      let currentTurnSpeaker = null; // groups transcript deltas into per-turn bubbles
+      let activeBubble = null; // the bubble currently growing (interim)
+      let activeBubbleText = null;
+      let idleFinalizeTimer = null; // settles a bubble after a short speaking pause
 
-      function appendLine(cls, text) {
-        const line = document.createElement("div");
-        line.className = cls;
-        line.textContent = text;
-        transcriptEl.appendChild(line);
+      // The live model treats "end the conversation" as a spoken goodbye and does not
+      // delegate, so the backend end tool never fires. Detect the intent from the
+      // learner's own transcript here and close the session for real. Requires a clear
+      // "end/stop/finish + conversation/call/session" or "hang up".
+      const END_INTENT =
+        /\b(end|stop|finish|close)\b[\s\w,'-]{0,24}\b(conversation|call|session|chat|talk|talking)\b|\bhang up\b|\bgood ?bye\b|\bbye[ -]bye\b/i;
+      function maybeDetectEnd(delta) {
+        if (ending || !ready) return;
+        endBuffer = (endBuffer + " " + delta).replace(/\s+/g, " ").slice(-180);
+        if (END_INTENT.test(endBuffer)) {
+          ending = true;
+          endBuffer = "";
+          postEvent({ kind: "log", message: "detected an end request in speech; hanging up" });
+          status.textContent = "Ending the conversation...";
+          addChip("", "Ending the conversation\u2026");
+          // Small delay so a brief spoken goodbye can play before the hang-up.
+          setTimeout(() => endSession("Ending the conversation..."), 1200);
+        }
+      }
+
+      function scrollTranscript() {
         transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      }
+
+      function timeNow() {
+        return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+
+      // Settle the active bubble: drop the dimmed/typing state and stamp the time.
+      function finalizeActiveBubble() {
+        clearTimeout(idleFinalizeTimer);
+        if (!activeBubble) return;
+        activeBubble.classList.remove("interim");
+        const typing = activeBubble.querySelector(".typing");
+        if (typing) typing.remove();
+        const time = document.createElement("div");
+        time.className = "bubble-time";
+        time.textContent = timeNow();
+        activeBubble.appendChild(time);
+        activeBubble = null;
+        activeBubbleText = null;
+        currentTurnSpeaker = null;
+      }
+
+      // Transcript deltas arrive as tiny fragments (often one word). Group consecutive
+      // fragments from the same speaker into one growing bubble so the conversation reads
+      // like a chat, not one word per line. The active bubble shows animated dots and
+      // dimmed text until the speaker changes or pauses, then it settles with a timestamp.
+      function addTranscript(speaker, delta) {
+        if (currentTurnSpeaker !== speaker || !activeBubbleText) {
+          finalizeActiveBubble();
+          const row = document.createElement("div");
+          row.className = "bubble interim " + (speaker === "user" ? "bubble-user" : "bubble-assistant");
+          const who = document.createElement("div");
+          who.className = "bubble-who";
+          who.textContent = speaker === "user" ? "You" : "Sage";
+          const text = document.createElement("div");
+          text.className = "bubble-text";
+          const typing = document.createElement("div");
+          typing.className = "typing";
+          typing.innerHTML = "<span></span><span></span><span></span>";
+          row.appendChild(who);
+          row.appendChild(text);
+          row.appendChild(typing);
+          transcriptEl.appendChild(row);
+          activeBubble = row;
+          activeBubbleText = text;
+          currentTurnSpeaker = speaker;
+        }
+        activeBubbleText.textContent += delta;
+        scrollTranscript();
+        clearTimeout(idleFinalizeTimer);
+        idleFinalizeTimer = setTimeout(finalizeActiveBubble, 1500);
+      }
+
+      // A small centered chip in the conversation flow: backend activity or a system note.
+      function addChip(kind, text) {
+        finalizeActiveBubble();
+        const row = document.createElement("div");
+        row.className = "chip-row";
+        const chip = document.createElement("div");
+        chip.className = "chip" + (kind ? " " + kind : "");
+        chip.textContent = text;
+        row.appendChild(chip);
+        transcriptEl.appendChild(row);
+        scrollTranscript();
+      }
+
+      function resetTranscript() {
+        clearTimeout(idleFinalizeTimer);
+        transcriptEl.innerHTML = "";
+        currentTurnSpeaker = null;
+        activeBubble = null;
+        activeBubbleText = null;
       }
 
       async function postEvent(payload) {
@@ -118,14 +430,26 @@
           await fetch(`${SERVER}/api/state/event`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ ...payload, app_session_id: appSessionId }),
           });
         } catch (err) {
           // Best-effort telemetry only; never blocks the live conversation.
         }
       }
 
+      newSessionBtn.addEventListener("click", () => {
+        // Switching sessions mid-call would orphan the running conversation, so
+        // only allow it while disconnected. Other sessions stay saved on the server.
+        if (ready) {
+          status.textContent = "End the current conversation before starting a new session.";
+          return;
+        }
+        startFreshSession();
+        status.textContent = "Started a new session. Other sessions stay saved.";
+      });
+
       function cleanup() {
+        clearTimeout(closeTimeout);
         microphone?.getTracks().forEach((t) => t.stop());
         events?.close();
         peer?.close();
@@ -133,11 +457,25 @@
         ready = false;
         start.disabled = false;
         stop.disabled = true;
+        picker.disabled = false;
+        newSessionBtn.disabled = false;
+        // Keep "new by default" for the next Start unless the user chose to resume one.
+        if (!resuming) {
+          appSessionId = makeAppId();
+          updateSessionLine();
+        }
+        // Refresh the list so the session just used now appears as resumable.
+        loadSessionPicker();
       }
 
       start.addEventListener("click", async () => {
         start.disabled = true;
+        picker.disabled = true;
+        newSessionBtn.disabled = true;
         finalized = false;
+        ending = false;
+        endBuffer = "";
+        resetTranscript();
         status.textContent = "Connecting...";
         try {
           connection = new RTCPeerConnection();
@@ -181,7 +519,7 @@
           const response = await fetch(`${SERVER}/api/session`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sdp }),
+            body: JSON.stringify({ sdp, app_session_id: appSessionId }),
           });
           if (!response.ok) throw new Error(await response.text());
           const result = await response.json();
@@ -192,12 +530,23 @@
         }
       });
 
-      stop.addEventListener("click", () => {
+      function endSession(message) {
         if (!ready || events?.readyState !== "open") return;
         stop.disabled = true;
-        status.textContent = "Finishing the conversation...";
+        status.textContent = message || "Finishing the conversation...";
         events.send(JSON.stringify({ type: "session.close" }));
-      });
+        // Fallback so the UI never hangs on "Ending..." if the final session.closed
+        // event is slow or never arrives (mirrors OpenAI's WebRTC quickstart).
+        clearTimeout(closeTimeout);
+        closeTimeout = setTimeout(() => {
+          if (!finalized) {
+            status.textContent = "Conversation ended.";
+            cleanup();
+          }
+        }, 6000);
+      }
+
+      stop.addEventListener("click", () => endSession());
 
       confirmBtn.addEventListener("click", async () => {
         if (!pendingFunctionCall) return;
@@ -206,21 +555,37 @@
           const saveResponse = await fetch(`${SERVER}/api/save-plan`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ confirmed: true, plan: pendingFunctionCall.args }),
-          });
-          const saveResult = await saveResponse.json();
-          events.send(
-            JSON.stringify({
-              type: "response.item.create",
-              event_id: "save_result_" + Date.now(),
-              item: {
-                type: "function_call_output",
-                call_id: pendingFunctionCall.call_id,
-                output: JSON.stringify(saveResult),
-              },
+            body: JSON.stringify({
+              confirmed: true,
+              plan: pendingFunctionCall.args,
+              app_session_id: appSessionId,
             }),
-          );
-          events.send(JSON.stringify({ type: "response.create", event_id: "continue_" + Date.now() }));
+          });
+          if (!saveResponse.ok) throw new Error(await saveResponse.text());
+          const saveResult = await saveResponse.json();
+          // The tool call was already answered ("awaiting confirmation") so the
+          // backend is not blocked. Now that the plan is actually saved, tell the
+          // model to say so out loud with a commentary append, and keep talking.
+          if (events && events.readyState === "open") {
+            events.send(
+              JSON.stringify({
+                type: "session.commentary.append",
+                event_id: "saved_" + Date.now(),
+                delegation_id: null,
+                content:
+                  "The learner just confirmed and the plan was saved successfully (id " +
+                  (saveResult.plan_id || "") +
+                  "). Let them know it is saved, then ask what they would like to do next.",
+              }),
+            );
+            postEvent({ kind: "log", message: "save confirmed and saved: " + (saveResult.plan_id || "") });
+          }
+          addChip("saved", "\u2705 Plan saved");
+          status.textContent = "Plan saved. You can keep talking.";
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          status.textContent = "Save failed: " + message;
+          postEvent({ kind: "log", message: "save/continue failed: " + message });
         } finally {
           pendingBox.style.display = "none";
           confirmBtn.disabled = false;
@@ -229,27 +594,43 @@
       });
 
       function onEvent(event) {
+        if (event.type === "error") {
+          // Surface session errors (for example an already-active response or a
+          // moderation cutoff) instead of failing silently. This is what makes a
+          // "the assistant went quiet" situation debuggable from the event log.
+          const detail = event.error
+            ? event.error.message || JSON.stringify(event.error)
+            : "unknown session error";
+          status.textContent = "Session error: " + detail;
+          postEvent({ kind: "log", message: "session error: " + detail });
+          return;
+        }
         if (event.type === "session.started") {
           ready = true;
           stop.disabled = false;
-          status.textContent = "Connected: " + event.session.id;
+          // The assistant waits for the learner to speak first (it introduces itself
+          // in its reply), so prompt the user to say hello.
+          status.textContent = "Connected. Say hi to begin.";
+          addChip("", "Connected \u00b7 say hi to begin");
           return;
         }
         if (event.type === "session.closed") {
           finalized = true;
           status.textContent = "Conversation ended.";
+          addChip("", "Conversation ended");
           postEvent({ kind: "log", message: `session closed, usage ${JSON.stringify(event.usage)}` });
           cleanup();
           return;
         }
         if (event.type === "session.input_transcript.delta") {
-          appendLine("u", "You: " + event.delta);
+          addTranscript("user", event.delta);
           speechSinceLastDelegation += event.delta;
           postEvent({ kind: "transcript", speaker: "learner", text: event.delta });
+          maybeDetectEnd(event.delta);
           return;
         }
         if (event.type === "session.output_transcript.delta") {
-          appendLine("a", "Assistant: " + event.delta);
+          addTranscript("assistant", event.delta);
           postEvent({ kind: "transcript", speaker: "assistant", text: event.delta });
           return;
         }
@@ -269,8 +650,11 @@
           if (inner.type === "response.output_item.done" && inner.item?.type === "web_search_call") {
             const action = inner.item.action || {};
             if (action.type === "search" && action.query) {
+              const q = action.query.length > 60 ? action.query.slice(0, 60) + "\u2026" : action.query;
+              addChip("activity", "\uD83D\uDD0D Searching DataCamp: " + q);
               postEvent({ kind: "step", step_kind: "search", detail: action.query });
             } else if (action.type === "open_page" && action.url) {
+              addChip("activity", "\uD83D\uDCC4 Reading a DataCamp page");
               postEvent({ kind: "step", step_kind: "open_page", detail: action.url });
             }
           }
@@ -285,7 +669,55 @@
               pendingFunctionCall = { call_id: inner.item.call_id, args };
               pendingSummary.textContent = `${args.goal || ""} (${(args.items || []).length} items, ${args.weekly_hours || "?"} h/week)`;
               pendingBox.style.display = "block";
+              pendingBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+              addChip("activity", "\uD83E\uDDE9 Plan ready \u00b7 tap Confirm and save below");
               postEvent({ kind: "pending_save", plan: args });
+              // Answer the tool call immediately with "not saved yet, awaiting
+              // confirmation". Without this the backend stays blocked waiting for a
+              // result, which is why the assistant went silent when the learner kept
+              // talking after a save proposal. The real save happens only on Confirm.
+              if (events && events.readyState === "open") {
+                events.send(
+                  JSON.stringify({
+                    type: "response.item.create",
+                    event_id: "save_ack_" + Date.now(),
+                    item: {
+                      type: "function_call_output",
+                      call_id: inner.item.call_id,
+                      output: JSON.stringify({
+                        status: "awaiting_user_confirmation",
+                        saved: false,
+                        message:
+                          "Not saved yet. Ask the learner to tap Confirm and save in the app. Do not say it is saved, and do not call save again until they confirm.",
+                      }),
+                    },
+                  }),
+                );
+                events.send(JSON.stringify({ type: "response.create", event_id: "save_ack_cont_" + Date.now() }));
+              }
+            }
+            if (inner.item.name === "end_conversation" && !ending) {
+              ending = true;
+              // The learner asked to end. Answer the tool so the backend is not blocked,
+              // let a short goodbye play, then actually hang up. The model cannot close
+              // the live session itself.
+              if (events && events.readyState === "open") {
+                events.send(
+                  JSON.stringify({
+                    type: "response.item.create",
+                    event_id: "end_ack_" + Date.now(),
+                    item: {
+                      type: "function_call_output",
+                      call_id: inner.item.call_id,
+                      output: JSON.stringify({ status: "ending" }),
+                    },
+                  }),
+                );
+                events.send(JSON.stringify({ type: "response.create", event_id: "end_cont_" + Date.now() }));
+              }
+              postEvent({ kind: "log", message: "learner asked to end; hanging up" });
+              status.textContent = "Ending the conversation...";
+              setTimeout(() => endSession("Ending the conversation..."), 2600);
             }
           }
           if (inner.type === "response.output_text.done" || inner.type === "response.completed") {

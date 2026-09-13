@@ -14,11 +14,17 @@ Run:
 from __future__ import annotations
 
 import base64
+import html
 import time
 from pathlib import Path
 
 import requests
 import streamlit as st
+
+# How often the dashboard fragment re-polls GET /api/state. This runs inside an
+# st.fragment so only the dashboard reruns; the WebRTC call in the iframe (in the
+# other column) is never re-rendered, so a live conversation is not interrupted.
+REFRESH_SECONDS = 2.0
 
 SERVER = "http://127.0.0.1:8000"
 REPO_URL = "https://github.com/KhalidAbdelaty/gpt-live-1-api-tutorial"
@@ -28,13 +34,13 @@ OPENAI_LOGO = ASSETS / "openai-logo.png"
 WIDGET_HTML = (Path(__file__).parent / "static" / "call_widget.html").read_text(encoding="utf-8")
 
 STEP_STYLE = {
-    "delegate": ("\U0001F9E0", "Delegated to backend"),
+    "delegate": ("\U0001F9E0", "New request \u2192 backend"),
     "search": ("\U0001F50D", "Searching DataCamp"),
     "open_page": ("\U0001F4C4", "Reading a page"),
-    "responded": ("\U0001F4AC", "Backend responded"),
+    "responded": ("\U0001F4AC", "Backend finished"),
     "plan_ready": ("\U0001F4CB", "Plan drafted"),
     "propose_save": ("\U0001F9E9", "Proposed a save"),
-    "saved": ("\u2705", "Saved"),
+    "saved": ("\u2705", "Plan saved"),
     "stale": ("\U0001F5D1\uFE0F", "Discarded a stale result"),
 }
 
@@ -51,6 +57,16 @@ st.set_page_config(page_title="DataCamp Voice Learning Assistant", page_icon="\U
 @st.cache_data
 def b64(path: Path) -> str | None:
     return base64.b64encode(path.read_bytes()).decode() if path.is_file() else None
+
+
+def esc(value: object) -> str:
+    """Escape model- and speech-derived text before it goes into raw HTML.
+
+    Transcript constraints, plan titles/reasons/URLs, and log lines all come from
+    the learner's speech or the backend model. Escaping keeps a stray "<" or "&"
+    from breaking the card markup rendered with unsafe_allow_html=True.
+    """
+    return html.escape("" if value is None else str(value))
 
 
 dc_logo = b64(DATACAMP_LOGO)
@@ -145,6 +161,16 @@ st.markdown(
       .plan-item a { font-weight: 700; color: var(--ink); text-decoration: none; }
       .plan-item a:hover { color: var(--brand); }
       .plan-item .reason { color: var(--muted); font-size: .84rem; margin-top: .2rem; }
+      .plan-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+      .badge {
+        font-size: .64rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em;
+        padding: .16rem .5rem; border-radius: 999px; white-space: nowrap; flex: 0 0 auto;
+      }
+      .badge-course { background: #E7F7EE; color: #02904A; }
+      .badge-project { background: #E7EDF6; color: #1F4E79; }
+      .badge-track { background: #F0E9FB; color: #6B3FA0; }
+      .badge-article { background: #FBF1DC; color: #8A5A00; }
+      .badge-resource { background: #F0F1EF; color: #5B6B7A; }
 
       /* ---- log ---- */
       .log-line {
@@ -226,6 +252,153 @@ for col, (icon, name, desc) in zip(cols, FEATURES):
 st.write("")
 
 # ------------------------------------------------------------------ main area
+def render_plan_tab(state: dict) -> None:
+    plan = state.get("saved_plan", {}).get("plan") if state.get("saved_plan") else None
+    pending = state.get("pending_save")
+    draft = state.get("plan_draft")
+    shown = plan or pending or draft
+
+    if state.get("saved_plan"):
+        saved = state["saved_plan"]
+        st.success(f"Saved as {saved['id']} at task version {saved['task_version']}")
+    elif pending:
+        st.info("Assistant proposed a save. Waiting for confirmation in the widget.")
+
+    if shown:
+        items = shown.get("items", [])
+        type_counts: dict[str, int] = {}
+        for item in items:
+            kind = (item.get("type") or "resource").lower()
+            type_counts[kind] = type_counts.get(kind, 0) + 1
+        mix = ", ".join(f"{count} {kind}{'s' if count != 1 else ''}" for kind, count in type_counts.items())
+        st.caption(
+            f"Goal: {esc(shown.get('goal', ''))} &middot; {esc(shown.get('weekly_hours', '?'))} hours/week"
+            + (f" &middot; {esc(mix)}" if mix else "")
+        )
+        for item in items:
+            item_type = (item.get("type") or "resource").lower()
+            if item_type not in {"course", "project", "track", "article"}:
+                item_type = "resource"
+            st.markdown(
+                f"""<div class="plan-item">
+                    <div class="plan-head">
+                        <a href="{esc(item.get('url', '#'))}" target="_blank" rel="noopener">{esc(item.get('title', 'Untitled'))}</a>
+                        <span class="badge badge-{item_type}">{esc(item_type)}</span>
+                    </div>
+                    <div class="reason">{esc(item.get('reason', ''))}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown('<p class="empty-state">No plan yet. Start a conversation and state a learning goal.</p>', unsafe_allow_html=True)
+
+    saved_plans = state.get("saved_plans", [])
+    if len(saved_plans) > 1:
+        with st.expander(f"Saved plans in this session ({len(saved_plans)})"):
+            for record in saved_plans[::-1]:
+                rec_plan = record.get("plan", {})
+                st.caption(
+                    f"{esc(record.get('id', ''))} &middot; task version {esc(record.get('task_version', ''))} "
+                    f"&middot; {esc(rec_plan.get('goal', ''))} ({len(rec_plan.get('items', []))} items)"
+                )
+
+
+def render_steps_tab(state: dict) -> None:
+    st.caption(
+        "A live trace of the backend as it works: when your request is handed off, each real "
+        "DataCamp search or page it opens, the drafted plan, the save proposal, and the confirmed "
+        "save. This is the assistant's actual activity, newest first, not a replay."
+    )
+    steps = state.get("steps", [])
+    if not steps:
+        st.markdown('<p class="empty-state">No backend activity yet.</p>', unsafe_allow_html=True)
+    for step in steps[::-1]:
+        icon, label = STEP_STYLE.get(step.get("kind"), ("\u2022", "Update"))
+        ts = time.strftime("%H:%M:%S", time.localtime(step["t"]))
+        st.markdown(
+            f"""<div class="step-row">
+                <div class="step-icon">{icon}</div>
+                <div class="step-body">
+                    <div class="step-kind">{label}</div>
+                    <div class="step-detail">{esc(step.get('detail', ''))}</div>
+                    <div class="step-time">{ts}</div>
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+
+def render_log_tab(state: dict) -> None:
+    st.caption(
+        "The server's timestamped audit trail of app-owned state changes: session start and "
+        "reconnect, each task-version bump when you change your request, save proposals, and "
+        "confirmed saves. It is the record the app acts on, separate from the spoken transcript."
+    )
+    log = state.get("log", [])
+    if not log:
+        st.markdown('<p class="empty-state">No events yet.</p>', unsafe_allow_html=True)
+    for entry in log[-14:][::-1]:
+        ts = time.strftime("%H:%M:%S", time.localtime(entry["t"]))
+        st.markdown(f'<div class="log-line">[{ts}] {esc(entry["message"])}</div>', unsafe_allow_html=True)
+
+
+def fetch_json(url: str) -> object | None:
+    try:
+        return requests.get(url, timeout=2).json()
+    except Exception:
+        return None
+
+
+@st.fragment(run_every=REFRESH_SECONDS)
+def render_dashboard() -> None:
+    """Poll the server and draw the dashboard on its own refresh loop.
+
+    Running this as a fragment is what lets the panel update live during a call:
+    the fragment reruns every REFRESH_SECONDS (and on the Refresh button) without
+    re-running the whole script, so the WebRTC iframe next to it stays connected.
+    """
+    header_col, refresh_col = st.columns([3, 1])
+    with header_col:
+        st.markdown(
+            """<div class="section-title">\U0001F4CA Session dashboard</div>
+            <p class="section-sub">Live view, refreshed every couple of seconds. No manual refresh needed.</p>""",
+            unsafe_allow_html=True,
+        )
+    with refresh_col:
+        st.button("Refresh", use_container_width=True)  # triggers an immediate fragment rerun
+
+    # The dashboard follows the live/active session automatically. Choosing which
+    # session to run or resume happens once, in the call widget's session picker, so
+    # there is no separate selector here.
+    state = fetch_json(f"{SERVER}/api/state")
+    if state is None:
+        st.warning("Application server is not reachable. Start it with `uvicorn server:app --port 8000`.")
+        return
+
+    live_id = state.get("live_session_id") or state.get("session_id")
+    app_id = state.get("app_session_id")
+    chip_class = "status-chip" if live_id else "status-chip idle"
+    st.markdown(
+        f"""
+        <div class="status-row">
+          <div class="status-chip"><div class="label">App session</div><div class="value">{esc(app_id or "not started")}</div></div>
+          <div class="{chip_class}"><div class="label">Live session</div><div class="value">{esc(live_id or "offline")}</div></div>
+          <div class="status-chip"><div class="label">Task version</div><div class="value">{esc(state.get("task_version", 0))}</div></div>
+          <div class="status-chip"><div class="label">Constraint</div><div class="value">{esc(state.get("active_constraint") or "none yet")}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    tab_plan, tab_steps, tab_log = st.tabs(["Learning plan", "Backend activity", "Event log"])
+    with tab_plan:
+        render_plan_tab(state)
+    with tab_steps:
+        render_steps_tab(state)
+    with tab_log:
+        render_log_tab(state)
+
+
 left, right = st.columns([1, 1], gap="medium")
 
 with left:
@@ -236,93 +409,10 @@ with left:
         </div>""",
         unsafe_allow_html=True,
     )
-    st.iframe(WIDGET_HTML, height=470)
+    st.iframe(WIDGET_HTML, height=540)
 
 with right:
-    header_col, refresh_col = st.columns([3, 1])
-    with header_col:
-        st.markdown(
-            """<div class="section-title">\U0001F4CA Session dashboard</div>
-            <p class="section-sub">Polls GET /api/state on the application server.</p>""",
-            unsafe_allow_html=True,
-        )
-    with refresh_col:
-        refresh = st.button("Refresh", use_container_width=True)
-
-    try:
-        state = requests.get(f"{SERVER}/api/state", timeout=2).json()
-    except Exception:
-        state = None
-
-    if state is None:
-        st.warning("Application server is not reachable. Start it with `uvicorn server:app --port 8000`.")
-    else:
-        session_id = state.get("session_id") or "not started"
-        chip_class = "status-chip" if state.get("session_id") else "status-chip idle"
-        st.markdown(
-            f"""
-            <div class="status-row">
-              <div class="{chip_class}"><div class="label">Session</div><div class="value">{session_id}</div></div>
-              <div class="status-chip"><div class="label">Task version</div><div class="value">{state.get("task_version", 0)}</div></div>
-              <div class="status-chip"><div class="label">Constraint</div><div class="value">{state.get("active_constraint") or "none yet"}</div></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        tab_plan, tab_steps, tab_log = st.tabs(["Learning plan", "Backend activity", "Event log"])
-
-        with tab_plan:
-            plan = state.get("saved_plan", {}).get("plan") if state.get("saved_plan") else None
-            pending = state.get("pending_save")
-            draft = state.get("plan_draft")
-            shown = plan or pending or draft
-
-            if state.get("saved_plan"):
-                st.success(f"Saved as {state['saved_plan']['id']} at task version {state['saved_plan']['task_version']}")
-            elif pending:
-                st.info("Assistant proposed a save. Waiting for confirmation in the widget.")
-
-            if shown:
-                st.caption(f"Goal: {shown.get('goal', '')} &middot; {shown.get('weekly_hours', '?')} hours/week")
-                for item in shown.get("items", []):
-                    st.markdown(
-                        f"""<div class="plan-item">
-                            <a href="{item.get('url', '#')}" target="_blank" rel="noopener">{item.get('title', 'Untitled')}</a>
-                            <div class="reason">{item.get('reason', '')}</div>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-            else:
-                st.markdown('<p class="empty-state">No plan yet. Start a conversation and state a learning goal.</p>', unsafe_allow_html=True)
-
-        with tab_steps:
-            st.caption("What the backend is doing, as it happens: delegation, real web_search calls, and the save proposal.")
-            steps = state.get("steps", [])
-            if not steps:
-                st.markdown('<p class="empty-state">No backend activity yet.</p>', unsafe_allow_html=True)
-            for step in steps[::-1]:
-                icon, label = STEP_STYLE.get(step.get("kind"), ("\u2022", "Update"))
-                ts = time.strftime("%H:%M:%S", time.localtime(step["t"]))
-                st.markdown(
-                    f"""<div class="step-row">
-                        <div class="step-icon">{icon}</div>
-                        <div class="step-body">
-                            <div class="step-kind">{label}</div>
-                            <div class="step-detail">{step.get('detail', '')}</div>
-                            <div class="step-time">{ts}</div>
-                        </div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-
-        with tab_log:
-            log = state.get("log", [])
-            if not log:
-                st.markdown('<p class="empty-state">No events yet.</p>', unsafe_allow_html=True)
-            for entry in log[-14:][::-1]:
-                ts = time.strftime("%H:%M:%S", time.localtime(entry["t"]))
-                st.markdown(f'<div class="log-line">[{ts}] {entry["message"]}</div>', unsafe_allow_html=True)
+    render_dashboard()
 
 st.write("")
 st.markdown(
